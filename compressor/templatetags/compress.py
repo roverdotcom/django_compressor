@@ -1,3 +1,5 @@
+import logging
+
 from django import template
 from django.core.exceptions import ImproperlyConfigured
 
@@ -12,6 +14,8 @@ register = template.Library()
 OUTPUT_FILE = 'file'
 OUTPUT_INLINE = 'inline'
 OUTPUT_MODES = (OUTPUT_FILE, OUTPUT_INLINE)
+
+logger = logging.getLogger('django.request')
 
 
 class CompressorMixin(object):
@@ -85,7 +89,15 @@ class CompressorMixin(object):
     def render_compressed(self, context, kind, mode, forced=False):
 
         # See if it has been rendered offline
-        cached_offline = self.render_offline(context, forced=forced)
+        try:
+            cached_offline = self.render_offline(context, forced=forced)
+        except OfflineGenerationError:
+            logger.warning(
+                "Offline generation error: %s" %
+                    self.get_original_content(context),
+                    exc_info=True)
+            return self.get_original_content(context)
+
         if cached_offline:
             return cached_offline
 
