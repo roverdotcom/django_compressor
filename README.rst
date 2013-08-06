@@ -1,3 +1,10 @@
+This Fork
+=========
+Contains fixes for the following:
+* https://github.com/jezdez/django_compressor/pull/331
+* https://github.com/jezdez/django_compressor/issues/349
+* https://github.com/jezdez/django_compressor/issues/425
+
 Django Compressor
 =================
 
