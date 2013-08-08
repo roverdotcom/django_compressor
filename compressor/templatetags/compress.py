@@ -15,7 +15,7 @@ OUTPUT_FILE = 'file'
 OUTPUT_INLINE = 'inline'
 OUTPUT_MODES = (OUTPUT_FILE, OUTPUT_INLINE)
 
-logger = logging.getLogger('rover')
+logger = logging.getLogger('django.request')
 
 
 class CompressorMixin(object):
