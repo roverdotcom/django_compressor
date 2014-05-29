@@ -273,6 +273,9 @@ class Command(NoArgsCommand):
                     if context['block']:
                         context['block'].context = context
                 key = get_offline_hexdigest(node.nodelist.render(context))
+                # Debug what is different.
+                with open('/tmp/' + key, 'r') as f:
+                    f.write(node.nodelist.render(context)
                 try:
                     result = node.render(context, forced=True)
                 except Exception, e:
