@@ -214,9 +214,8 @@ class Compressor(object):
             else:
                 if precompiled:
                     value = self.filter(value, enabled=False, **options)
-                    value = self.handle_output(kind, value, forced=True,
+                    yield self.handle_output(kind, value, forced=True,
                                                basename=basename)
-                    yield smart_unicode(value, charset.lower())
                 else:
                     yield self.parser.elem_str(elem)
 
