@@ -156,11 +156,17 @@ class Command(NoArgsCommand):
         if verbosity > 1:
             log.write("Found templates:\n\t" + "\n\t".join(templates) + "\n")
 
-        engine = options.get("engine", "django")
-        parser = self.__get_parser(engine)
-
         compressor_nodes = SortedDict()
         for template_name in templates:
+            custom_engines = getattr(settings, 'COMPRESS_OFFLINE_ENGINES', {})
+            for suffix, engine in sorted(custom_engines.items(), key=lambda x: x[0], reverse=True):
+                if suffix in template_name:
+                    break
+            else:
+                engine = options.get("engine", "django")
+
+            parser = self.__get_parser(engine)
+
             try:
                 template = parser.parse(template_name)
             except IOError:  # unreadable file -> ignore
@@ -188,7 +194,7 @@ class Command(NoArgsCommand):
                 continue
             if nodes:
                 template.template_name = template_name
-                compressor_nodes.setdefault(template, []).extend(nodes)
+                compressor_nodes.setdefault((template, parser), []).extend(nodes)
 
         if not compressor_nodes:
             raise OfflineGenerationError(
@@ -199,15 +205,15 @@ class Command(NoArgsCommand):
         if verbosity > 0:
             log.write("Found 'compress' tags in:\n\t" +
                       "\n\t".join((t.template_name
-                                   for t in compressor_nodes.keys())) + "\n")
+                                   for t, p in compressor_nodes.keys())) + "\n")
 
         log.write("Compressing... ")
         count = 0
         results = []
         offline_manifest = SortedDict()
-        init_context = parser.get_init_context(settings.COMPRESS_OFFLINE_CONTEXT)
-
-        for template, nodes in compressor_nodes.items():
+        
+        for (template, parser), nodes in compressor_nodes.items():
+            init_context = parser.get_init_context(settings.COMPRESS_OFFLINE_CONTEXT)
             context = Context(init_context)
             template._log = log
             template._log_verbosity = verbosity
