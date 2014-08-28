@@ -1,23 +1,27 @@
-from __future__ import with_statement
+from __future__ import with_statement, unicode_literals
 import os
 import codecs
-import urllib
 
 from django.core.files.base import ContentFile
 from django.template import Context
 from django.template.loader import render_to_string
-from django.utils.encoding import smart_unicode
 from django.utils.importlib import import_module
 from django.utils.safestring import mark_safe
 
-from compressor.cache import get_hexdigest, get_mtime
+try:
+    from urllib.request import url2pathname
+except ImportError:
+    from urllib import url2pathname
 
+from compressor.cache import get_hexdigest, get_mtime
 from compressor.conf import settings
 from compressor.exceptions import (CompressorError, UncompressableFileError,
         FilterDoesNotExist)
 from compressor.filters import CompilerFilter
+
 from compressor.filters.css_default import CssAbsoluteFilter
-from compressor.storage import default_storage, compressor_file_storage
+from compressor.storage import compressor_file_storage
+
 from compressor.signals import post_compress
 from compressor.utils import get_class, get_mod_func, staticfiles
 from compressor.utils.decorators import cached_property
@@ -35,16 +39,21 @@ class Compressor(object):
     type = None
 
     def __init__(self, content=None, output_prefix=None, context=None, *args, **kwargs):
-        self.content = content or ""
+        self.content = content or ""  # rendered contents of {% compress %} tag
         self.output_prefix = output_prefix or "compressed"
         self.output_dir = settings.COMPRESS_OUTPUT_DIR.strip('/')
         self.charset = settings.DEFAULT_CHARSET
-        self.storage = default_storage
         self.split_content = []
         self.context = context or {}
         self.extra_context = {}
         self.all_mimetypes = dict(settings.COMPRESS_PRECOMPILERS)
         self.finders = staticfiles.finders
+        self._storage = None
+
+    @cached_property
+    def storage(self):
+        from compressor.storage import default_storage
+        return default_storage
 
     def split_contents(self):
         """
@@ -66,6 +75,10 @@ class Compressor(object):
         return "compressor/%s_%s.html" % (self.type, mode)
 
     def get_basename(self, url):
+        """
+        Takes full path to a static file (eg. "/static/css/style.css") and
+        returns path with storage's base url removed (eg. "css/style.css").
+        """
         try:
             base_url = self.storage.base_url
         except AttributeError:
@@ -79,6 +92,17 @@ class Compressor(object):
         return basename.split("?", 1)[0]
 
     def get_filepath(self, content, basename=None):
+        """
+        Returns file path for an output file based on contents.
+
+        Returned path is relative to compressor storage's base url, for
+        example "CACHE/css/e41ba2cc6982.css".
+
+        When `basename` argument is provided then file name (without extension)
+        will be used as a part of returned file name, for example:
+
+        get_filepath(content, "my_file.css") -> 'CACHE/css/my_file.e41ba2cc6982.css'
+        """
         parts = []
         if basename:
             filename = os.path.split(basename)[1]
@@ -87,12 +111,17 @@ class Compressor(object):
         return os.path.join(self.output_dir, self.output_prefix, '.'.join(parts))
 
     def get_filename(self, basename):
+        """
+        Returns full path to a file, for example:
+
+        get_filename('css/one.css') -> '/full/path/to/static/css/one.css'
+        """
         filename = None
 
         # In debug mode, use the finders first to prevent lookups in
         # already-processed STATIC_ROOT
         if settings.DEBUG and self.finders:
-            filename = self.finders.find(urllib.url2pathname(basename))
+            filename = self.finders.find(url2pathname(basename))
 
         # first try finding the file in the root
         if not filename:
@@ -108,7 +137,7 @@ class Compressor(object):
                     filename = compressor_file_storage.path(basename)
             # secondly try to find it with staticfiles (in debug mode)
             if not filename and self.finders:
-                filename = self.finders.find(urllib.url2pathname(basename))
+                filename = self.finders.find(url2pathname(basename))
 
         if filename:
             return filename
@@ -119,13 +148,16 @@ class Compressor(object):
              self.finders and " or with staticfiles." or "."))
 
     def get_filecontent(self, filename, charset):
-        with codecs.open(filename, 'rb', charset) as fd:
+        """
+        Reads file contents using given `charset` and returns it as text.
+        """
+        with codecs.open(filename, 'r', charset) as fd:
             try:
                 return fd.read()
-            except IOError, e:
+            except IOError as e:
                 raise UncompressableFileError("IOError while processing "
                                               "'%s': %s" % (filename, e))
-            except UnicodeDecodeError, e:
+            except UnicodeDecodeError as e:
                 raise UncompressableFileError("UnicodeDecodeError while "
                                               "processing '%s' with "
                                               "charset %s: %s" %
@@ -152,7 +184,7 @@ class Compressor(object):
 
     def hunks(self, forced=False):
         """
-        The heart of content parsing, iterates of the
+        The heart of content parsing, iterates over the
         list of split contents and looks at its kind
         to decide what to do with it. Should yield a
         bunch of precompiled and/or rendered hunks.
@@ -168,6 +200,7 @@ class Compressor(object):
                 'elem': elem,
                 'kind': kind,
                 'basename': basename,
+                'charset': charset,
             }
             if kind == SOURCE_FILE:
                 options = dict(options, filename=value)
@@ -177,12 +210,12 @@ class Compressor(object):
                 precompiled, value = self.precompile(value, **options)
 
             if enabled:
-                value = self.filter(value, **options)
-                yield smart_unicode(value, charset.lower())
+                yield self.filter(value, **options)
             else:
                 if precompiled:
                     value = self.filter(value, enabled=False, **options)
-                    value = self.handle_output(kind, value, forced=True, basename=basename)
+                    value = self.handle_output(kind, value, forced=True,
+                                               basename=basename)
                     yield smart_unicode(value, charset.lower())
                 else:
                     yield self.parser.elem_str(elem)
@@ -204,7 +237,13 @@ class Compressor(object):
             content.append(hunk)
         return content
 
-    def precompile(self, content, kind=None, elem=None, filename=None, **kwargs):
+    def precompile(self, content, kind=None, elem=None, filename=None,
+                   charset=None, **kwargs):
+        """
+        Processes file using a pre compiler.
+
+        This is the place where files like coffee script are processed.
+        """
         if not kind:
             return False, content
         attrs = self.parser.elem_attribs(elem)
@@ -221,18 +260,21 @@ class Compressor(object):
                 try:
                     mod = import_module(mod_name)
                 except ImportError:
-                    return True, CompilerFilter(content, filter_type=self.type,
-                            command=filter_or_command, filename=filename).input(
-                                **kwargs)
+                    filter = CompilerFilter(
+                        content, filter_type=self.type, filename=filename,
+                        charset=charset, command=filter_or_command)
+                    return True, filter.input(**kwargs)
                 try:
                     precompiler_class = getattr(mod, cls_name)
                 except AttributeError:
                     raise FilterDoesNotExist('Could not find "%s".' %
                             filter_or_command)
                 else:
-                    return True, precompiler_class(content, attrs,
-                            filter_type=self.type, filename=filename).input(
-                                **kwargs)
+                    filter = precompiler_class(
+                        content, attrs, filter_type=self.type, charset=charset,
+                        filename=filename)
+                    return True, filter.input(**kwargs)
+
         return False, content
 
     def filter(self, content, method, enabled=True, **kwargs):
@@ -257,11 +299,10 @@ class Compressor(object):
         any custom modification. Calls other mode specific methods or simply
         returns the content directly.
         """
-        content = self.filter_input(forced)
-        if not content:
-            return ''
+        output = '\n'.join(self.filter_input(forced))
 
-        output = '\n'.join(c.encode(self.charset) for c in content)
+        if not output:
+            return ''
 
         if settings.COMPRESS_ENABLED or forced:
             filtered_output = self.filter_output(output)
@@ -285,7 +326,7 @@ class Compressor(object):
         """
         new_filepath = self.get_filepath(content, basename=basename)
         if not self.storage.exists(new_filepath) or forced:
-            self.storage.save(new_filepath, ContentFile(content))
+            self.storage.save(new_filepath, ContentFile(content.encode(self.charset)))
         url = mark_safe(self.storage.url(new_filepath))
         return self.render_output(mode, {"url": url})
 
